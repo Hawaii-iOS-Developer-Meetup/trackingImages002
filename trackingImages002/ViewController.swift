@@ -14,6 +14,18 @@ class ViewController: UIViewController, ARSCNViewDelegate {
 
     @IBOutlet var sceneView: ARSCNView!
     
+    /// Prevents restarting the session while a restart is in progress.
+    var isRestartAvailable = true
+    
+    /// Convenience accessor for the session owned by ARSCNView.
+    var session: ARSession {
+        return sceneView.session
+    }
+    
+    /// A serial queue for thread safety when modifying the SceneKit node graph.
+    let updateQueue = DispatchQueue(label: Bundle.main.bundleIdentifier! +
+        ".serialSceneKitQueue")
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         
@@ -22,12 +34,16 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         
         // Show statistics such as fps and timing information
         sceneView.showsStatistics = true
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
         
-        // Create a new scene
-        let scene = SCNScene(named: "art.scnassets/ship.scn")!
+        // Prevent the screen from being dimmed to avoid interuppting the AR experience.
+        UIApplication.shared.isIdleTimerDisabled = true
         
-        // Set the scene to the view
-        sceneView.scene = scene
+        // Start the AR experience
+        resetTracking()
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -45,6 +61,61 @@ class ViewController: UIViewController, ARSCNViewDelegate {
         
         // Pause the view's session
         sceneView.session.pause()
+    }
+    
+    // MARK: - ARSCNViewDelegate (Image detection results)
+    /// - Tag: ARImageAnchor-Visualizing
+    func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
+        guard let imageAnchor = anchor as? ARImageAnchor else { return }
+        let referenceImage = imageAnchor.referenceImage
+        updateQueue.async {
+            
+            // Create a plane to visualize the initial position of the detected image.
+            let plane = SCNPlane(width: referenceImage.physicalSize.width,
+                                 height: referenceImage.physicalSize.height)
+            let planeNode = SCNNode(geometry: plane)
+            planeNode.opacity = 0.25
+            
+            /*
+             `SCNPlane` is vertically oriented in its local coordinate space, but
+             `ARImageAnchor` assumes the image is horizontal in its local space, so
+             rotate the plane to match.
+             */
+            planeNode.eulerAngles.x = -.pi / 2
+            
+            /*
+             Image anchors are not tracked after initial detection, so create an
+             animation that limits the duration for which the plane visualization appears.
+             */
+            planeNode.runAction(self.imageHighlightAction)
+            
+            // Add the plane visualization to the scene.
+            node.addChildNode(planeNode)
+        }
+    }
+    
+    /// Creates a new AR configuration to run on the `session`.
+    /// - Tag: ARReferenceImage-Loading
+    func resetTracking() {
+        
+        guard let referenceImages = ARReferenceImage.referenceImages(inGroupNamed: "AR Resources", bundle: nil) else {
+            fatalError("Missing expected asset catalog resources.")
+        }
+        
+        let configuration = ARWorldTrackingConfiguration()
+        configuration.detectionImages = referenceImages
+        session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+    }
+    
+    var imageHighlightAction: SCNAction {
+        return .sequence([
+            .wait(duration: 0.25),
+            .fadeOpacity(to: 0.85, duration: 0.25),
+            .fadeOpacity(to: 0.15, duration: 0.25),
+            .fadeOpacity(to: 0.85, duration: 0.25),
+            .fadeOut(duration: 0.5),
+            .removeFromParentNode()
+            ])
     }
     
     override func didReceiveMemoryWarning() {
